@@ -1,0 +1,224 @@
+---
+title: "07 Differential Expression Analysis"
+---
+
+```{r}
+#| include: false
+
+# library
+library(tidyverse)
+library(Seurat)
+library(data.table)
+library(celldex)
+library(SingleR)
+library(ExperimentHub)
+```
+
+```{r}
+#| include: false
+
+filtered.seuratObj <- readRDS("")
+```
+
+# Find markers
+
+In the last chapter, we used `FindMarkers` to find the marker genes between two clusters by specifying `ident.1` and `ident.2`.
+
+Changing the `ident.1` and `ident.2` arguments, we can use the Wilcoxon Rank Sum test (default) to find genes differentially expressed in different groups.
+
+For instance, we want to find genes differentially expressed between naïve and activated PBMC.
+
+```{r}
+# assign the sample identity that we want to work on different sample groups
+Idents(integrate.filtered.seuratObj) <- "Sample_Name"
+
+# Find genes differentially expressed between activated vs. naïve
+activated_naive <- 
+  FindMarkers(integrate.filtered.seuratObj, ident.1 = "activated", ident.2 = "naive") %>% 
+  rownames_to_column("gene") %>% 
+  dplyr::filter(p_val_adj < 0.05)
+```
+
+We can compare the gene expression between two groups by specifying `ident.1` and `ident.2`.
+
+```{r}
+head(activated_naive)
+```
+
+`gene` gene symbol
+`p_val` p-value without multiple testing
+`avg_log2FC` log2 fold-change of the average expression between the two groups
+
+We can also find genes differentially expressed in CD4 T cells between naïve and activated PBMC. We start by subsetting the cells being annotated as "CD4 T".
+
+```{r}
+# subset CD4 T cells
+cd4t <- subset(integrate.filtered.seuratObj, subset = predicted.celltype.l1 == "CD4 T")
+
+# Find genes differentially expressed between activated vs. naive samples in CD4 T cells
+activated_naive_cd4t <- 
+  FindMarkers(cd4t, ident.1 = "activated", ident.2 = "naive", assay = "RNA", recorrect_umi = FALSE) %>% 
+  rownames_to_column("gene") %>% 
+  dplyr::filter(p_val_adj < 0.05)
+```
+
+# Muscat for Differential State analysis (DS)
+
+Wilcoxon rank-sum test assumes the samples are statistically independent.
+
+However, this is usually not the case in multi-subject scRNA-seq data, where cells from the same subject often have more similar gene expression profiles.
+
+When using the Wilcoxon rank-sum test for multi-subject scRNA-seq data, we are prone to have high false positives.
+
+Pseudo-bulk aggregation transforms scRNA-seq data into bulk-like data by aggregating gene counts within each cell type and subject. Benchmark shows it has fewer false positives.
+
+## Setup
+
+Let's assume we have three biological replicates in each condition (we made them up for illustration).
+
+```{r}
+# read in dummy group
+dummy_meta <- read_csv("data/dummy_meta.csv") %>% 
+  mutate(dummy_group = paste(Sample_Name, group, sep = "_"))
+
+# add the dummy meta into the seurat object
+integrate.filtered.seuratObj <- AddMetaData(integrate.filtered.seuratObj, dummy_meta$dummy_group, col.name = "dummy_group")
+```
+
+```{r}
+head(integrate.filtered.seuratObj@meta.data)
+```
+
+## Select cells
+
+Let's take a look at the cell type annotation in UMAP.
+
+```{r}
+# visualize cell types in UMAP
+DimPlot(integrate.filtered.seuratObj, 
+        reduction = "umap", 
+        group.by = "predicted.celltype.l1", 
+        label = TRUE, 
+        label.size = 3,
+        repel = TRUE, 
+        split.by = "Sample_Name") + NoLegend()
+```
+
+We see some of the cell types have only a few cells. We will remove those cells.
+
+Let's look at how many cells are in each cell type per dummy group.
+
+```{r}
+# Cell counts in per cell type per group
+n_cells <- FetchData(integrate.filtered.seuratObj, 
+                     vars = c("predicted.celltype.l1", "dummy_group", "Sample_Name")) %>%
+  dplyr::count(predicted.celltype.l1, Sample_Name, dummy_group) %>%
+  tidyr::spread(predicted.celltype.l1, n)
+
+# View table
+head(n_cells)
+```
+
+Dendritic cells, other T cells, and other don't have sufficient cells per dummy group. For demonstration, we will not include these cells for pseudo-bulk analysis. We will focus on "CD4 T", "Mono", and "NK".
+
+```{r}
+rna.subset <- subset(integrate.filtered.seuratObj, 
+                     subset = predicted.celltype.l1 %in% 
+                       c("CD4 T", "Mono", "NK"))
+```
+
+## Setup `SingleCellExperiment`
+
+The `muscat` package requires the input object as the `SingleCellExperiment` object. We first transform the Seurat object into SCE object.
+
+`muscat` requires three pieces of meta data information:
+`sample_id` sample IDs, corresponds to `dummy_group` in the `meta.data`
+`cluster_id` cell types, corresponds to `predicted.celltype.l1` in the `meta.data`
+`group_id` sample groups, corresponds to `sample` in the `meta.data`
+
+Let's first tidy up the meta data.
+
+```{r}
+rna.subset@meta.data <- rna.subset@meta.data %>% 
+  dplyr::select(Sample_Name, predicted.celltype.l1, dummy_group) %>% 
+  `colnames<-`(c("group_id", "cluster_id", "sample_id"))
+```
+
+Seurat has a convenient function to convert Seurat object into SingleCellExperiment object, `as.SingleCellExperiment`.
+
+```{r}
+# construct experiment_info
+experiment_info <- rna.subset@meta.data %>% 
+  rownames_to_column("Cell_Index") %>% 
+  dplyr::select(sample_id, group_id, Cell_Index) %>% 
+  group_by(sample_id, group_id) %>% 
+  dplyr::summarise(n_cells = length(Cell_Index)) %>% 
+  `colnames<-`(c("sample_id", "group_id", "n_cells"))
+
+# convert seurat object into SingleCellExperiment object
+rna.subset <- as.SingleCellExperiment(rna.subset, assay = "RNA")
+```
+
+The SCE object doesn't contain the experiment_info. We add the information into the SCE object.
+
+```{r}
+# assign experiment info into the created SingleCellExperiment
+rna.subset@metadata[["experiment_info"]] <- experiment_info
+```
+
+## Aggregation
+
+We first aggregate measurements for each sample (in each cell type) to obtain pseudobulk data.
+
+```{r}
+# aggregate counts per cell type per dummy group
+subset.pb <- aggregateData(rna.subset,
+                           assay = "counts", 
+                           fun = "sum",
+                           by = c("cluster_id", "sample_id"))
+```
+
+We can look at how the pseudobulk samples cluster on the MDS plot.
+
+```{r}
+muscat::pbMDS(subset.pb)
+```
+
+Next, we can run DS analysis by specifying `method` as `DESeq2`.
+
+```{r}
+# change group_id into a factor
+subset.pb$group_id <- subset.pb$group_id %>% as.factor()
+
+# run DS analysis with DESeq2
+res <- pbDS(subset.pb, method = "DESeq2", verbose = T)
+```
+
+The result is stored in the \`table\` slot in \`res\`.
+
+```{r}
+res$table
+```
+
+We will focus on the differentially expressed genes in CD4 T cells.
+
+```{r}
+cd4t <- res$table$naive$`CD4 T`
+
+# Filter the results with p_adj.loc < 0.05, abs(logFC) > 1
+cd4t.sig <- dplyr::filter(cd4t, p_adj.loc < 0.05, abs(logFC) > 1) %>% 
+  arrange(p_adj.loc)
+```
+
+`p_adj.loc` is produced by correcting for multiple testing across all genes tested within a cluster.
+`p_adj.glb` is produced by correcting for multiple testing across all genes tested in all clusters.
+
+```{r}
+# scale the RNA data
+integrate.filtered.seuratObj <- ScaleData(integrate.filtered.seuratObj, features = rownames(integrate.filtered.seuratObj), assay = "RNA")
+
+# plot heatmap
+integrate.filtered.seuratObj %>%
+  subset(., subset = predicted.celltype.l1 == "CD4 T") %>% 
+  DoHeatmap(features = cd4t.sig$gene[1:40])
+```

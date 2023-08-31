@@ -1,0 +1,17 @@
+---
+title: "Glossory"
+---
+
+expression matrix
+
+bioproduct
+
+cell index
+
+UMI
+
+data frame
+
+pAbO: **p**hosphate **a**nti**b**ody **o**ligo
+
+quality metrics:

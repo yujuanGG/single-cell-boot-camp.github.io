@@ -1,0 +1,141 @@
+---
+title: "04 Integration"
+---
+
+```{r}
+#| include: false
+
+# library
+library(tidyverse)
+library(Seurat)
+library(data.table)
+library(celldex)
+library(SingleR)
+library(ExperimentHub)
+```
+
+```{r}
+#| include: false
+
+filtered.seuratObj <- readRDS("data/intermediate_data/03_filtered.seuratObj.rds")
+```
+
+# To integrate or not to integrate?
+
+The goal of integration is to find corresponding cell states across conditions (or experiments).
+
+1.  We want to identify \*\*cell types which are present in all samples/conditions/modalities\*\* within our dataset.
+
+2\. We expect to observe a representation of cells from samples/conditions/modalities in every cluster.
+
+3\. This helps with the downstream analysis, i.e. cell type annotation, differential expression analysis, etc.
+
+We need to first go through the analysis **without integration** to determine whether integration is necessary. If we see cells separated because of samples, conditions, modalities, etc., we can come back to run the analysis with integration.
+
+```{r}
+# Run the standard workflow for visualization
+filtered.seuratObj <- RunUMAP(filtered.seuratObj, dims = 1:15)
+
+DimPlot(filtered.seuratObj, group.by = "Sample_Name")
+```
+
+::: callout-important
+## Question
+
+Judging by the UMAP, do the two samples need to be integrated?
+:::
+
+::: {.callout-tip collapse="T"}
+## Answer
+
+The same cell types from the two samples are not aligned. We can perform integration.
+:::
+
+# Perform integration
+
+First, we select the features for the integration. The features should be selected in each dataset.
+
+```{r}
+# split the dataset into a list of two seurat objects (activated and naive)
+split.filtered.seuratObj <- SplitObject(filtered.seuratObj, split.by = "Sample_Name")
+
+# normalize and identify variable features for each dataset independently
+split.filtered.seuratObj <- lapply(X = split.filtered.seuratObj, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+# Select the most variable features to use for integration
+integ.features <- SelectIntegrationFeatures(object.list = split.filtered.seuratObj, 
+                                            nfeatures = 2000) 
+```
+
+Next, we perform the integration across samples. This step can take a while to run.
+
+```{r}
+anchors <- FindIntegrationAnchors(object.list = split.filtered.seuratObj,
+                                  anchor.features = integ.features)
+```
+
+Finally, we can integrate across samples. By default, `normalization.method` is set to `LogNormalize`.
+
+```{r}
+integrate.filtered.seuratObj <- IntegrateData(anchorset = anchors)
+```
+
+# Visualize in UMAP
+
+After integration, we look at the integrated data with UMAP. To calculate UMAP, we need to first calculate PCA and select top PCs.
+
+Methods to select top PCs were used a lot more often when the data was normalized with `LogNormalize`.
+
+```{r}
+integrate.filtered.seuratObj <- ScaleData(integrate.filtered.seuratObj, verbose = FALSE)
+integrate.filtered.seuratObj <- RunPCA(integrate.filtered.seuratObj, npcs = 30, verbose = FALSE)
+```
+
+Elbow plot is one of the visualization method to help selecting top PCs. The PC number where the elbow is is used to calculate UMAP. We select the top 15 PCs.
+
+```{r}
+ElbowPlot(integrate.filtered.seuratObj)
+```
+
+```{r}
+integrate.filtered.seuratObj <- RunUMAP(integrate.filtered.seuratObj, 
+                                        reduction = "pca", 
+                                        dims = 1:15)
+
+integrate.filtered.seuratObj <- FindNeighbors(integrate.filtered.seuratObj, 
+                                              reduction = "pca", 
+                                              dims = 1:15)
+
+
+# Plot UMAP                             
+DimPlot(integrate.filtered.seuratObj, group.by = "Sample_Name")   
+```
+
+::: callout-note
+## Exercise 1
+
+Change the number of PCs and see how the UMAP changes.
+
+You can change the PC numbers by `dims` argument in `RunUMAP`.
+:::
+
+::: callout-note
+## Exercise 2
+
+`Dimplot` has many arguments to control the plots.
+
+1.  Search `Dimplot` in the "Help" section and read the documentation.
+2.  Change `group.by` to `split.by`. What is the difference?
+:::
+
+When we compare the similarity between the naive and activated clusters in the below plot with what we see using the integrated dataset, it is clear that this dataset benefited from the integration.
+
+```{r}
+p1 <- DimPlot(filtered.seuratObj, group.by = "Sample_Name") + NoLegend()
+p2 <- DimPlot(integrate.filtered.seuratObj, group.by = "Sample_Name")  + NoLegend()
+
+p1|p2
+```

@@ -1,0 +1,120 @@
+---
+title: "03 Normalization and PCA"
+---
+
+```{r}
+#| include: false
+
+# library
+library(tidyverse)
+library(Seurat)
+library(data.table)
+library(celldex)
+library(SingleR)
+library(ExperimentHub)
+```
+
+```{r}
+#| include: false
+
+filtered.seuratObj <- readRDS("data/intermediate_data/02_filtered.seuratObj.rds")
+```
+
+# Normalization
+
+We will perform a normalization on UMI counts using `LogNormalize`.
+
+`LogNormalize` divides the UMI counts of a gene in a cell into the total UMI counts in that cell. After division, we take the natural log.
+
+```{r}
+filtered.seuratObj <- NormalizeData(filtered.seuratObj, 
+                                    normalization.method = "LogNormalize")
+```
+
+::: callout-important
+## Question
+
+Where are the normalized counts stored?
+:::
+
+::: {.callout-tip collapse="T"}
+## Answer
+
+The normalizaed counts are stored in the slot `RNA`.
+
+```{r}
+filtered.seuratObj@assays[["RNA"]]@data %>% head()
+```
+:::
+
+# Evaluating effects of mitochondrial percentage
+
+The unwanted variation, such as the difference in mitochondrial percentage, could affect the downstream analysis.
+
+For example, we don't want the cells clustered based on the difference in mitochondrial percentage.
+
+Let's first look at if the mitochondrial percentage introduces unwanted variation. We take the normalized counts and see if we have unwanted variation from the mitochondrial percentage.
+
+1.  The mitochondrial percentage is a series of numbers. We can turn the mitochondrial percentage variable into a categorical variable based on quartiles.
+
+```{r}
+summary(filtered.seuratObj$percent.mt)
+```
+
+We can have three categories based on the quartiles:
+
+Mitochondrial percentage below 1st quartile (10.2896%): Low Mitochondrial percentage between 1st and Median: Median Mitochondrial percentage between Median and 3rd quartile (15.4158%): Median high Mitochondrial percentage beyond 3rd quartile (15.4158%): High
+
+Next, we create a new variable based on the cutoff.
+
+```{r}
+filtered.seuratObj$quartile.mt <- cut(filtered.seuratObj$percent.mt, 
+                                      breaks=c(-Inf, 10.2856, 12.6322, 15.4088, Inf),
+                                      labels=c("Low","Medium","Medium high", "High"))
+```
+
+We want to check whether the mitochondrial percentage is a source of variation using PCA. We plot the first two principal components to visualize the data.
+
+```{r}
+# Identify the most variable genes
+filtered.seuratObj <- FindVariableFeatures(filtered.seuratObj,
+                                           selection.method = "vst",
+                                           nfeatures = 2000, 
+                                           verbose = FALSE)
+		     
+# Scale the data
+filtered.seuratObj <- ScaleData(filtered.seuratObj, features = rownames(filtered.seuratObj))
+
+# perform PCA
+filtered.seuratObj <- RunPCA(filtered.seuratObj)
+
+# Plot pc1 and pc2
+DimPlot(filtered.seuratObj,
+        reduction = "pca",
+        group.by= "quartile.mt",
+        split.by = "quartile.mt")
+```
+
+Based on the above plot, we can see a different scatter pattern in cells with "Low" mitochondrial percentage.
+
+We observe that the lobe of cells in the left middle side of the plot is in the category "Low". For all other levels of mitochondrial percentage, we see a more even distribution of cells across the PCA plot.
+
+::: callout-tip
+Oftentimes, it is helpful to regress out variation due to mitochondrial percentage. However, if the differences in mitochondrial gene expression represent a biological phenomenon that might help to distinguish cell clusters, then we do not regress this out.
+:::
+
+::: callout-tip
+Cell cycle is another common variation. For instructions, please refer to <https://satijalab.org/seurat/articles/cell_cycle_vignette.html>
+:::
+
+To regress out the effect mitochondrial percentage, add the argument `vars.to.regress = "percent.mt"` to the `ScaleData`.
+
+```{r}
+# Scale the data
+filtered.seuratObj <- ScaleData(filtered.seuratObj, 
+                                features = rownames(filtered.seuratObj), 
+                                vars.to.regress = "percent.mt")
+
+# perform PCA
+filtered.seuratObj <- RunPCA(filtered.seuratObj)
+```

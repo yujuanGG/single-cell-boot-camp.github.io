@@ -1,0 +1,36 @@
+project:
+  type: website
+  execute-dir: project
+
+website:
+  sidebar: 
+    style: "docked"  
+    title: "Single Cell Boot Camp: Analyzing Single Cell RNA-seq with R"
+    search: true
+    page-navigation: true
+    contents: 
+      - index.qmd
+      - precourse_preparations.qmd
+      - course_schedule.qmd
+      - 01_data_import.qmd
+      - 02_quality_control.qmd
+      - 03_normalization.qmd
+      - 04_integration.qmd
+      - 05_clustering.qmd
+      - 06_marker_identification.qmd
+      - 07_differential_expression_analysis.qmd
+      - 08_enrichment_analysis.qmd
+      - 09_combining.qmd
+
+format:
+  html:
+    code-link: true 
+    theme: cosmo
+    css: styles.css
+    toc: true
+
+execute:
+  freeze: auto 
+  cache: true
+  tidy: true
+

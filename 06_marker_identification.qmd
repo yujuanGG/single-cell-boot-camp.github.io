@@ -1,0 +1,221 @@
+---
+title: "06 Marker Identification"
+---
+
+```{r}
+#| include: false
+
+
+# library
+library(tidyverse)
+library(Seurat)
+library(data.table)
+library(celldex)
+library(SingleR)
+library(ExperimentHub)
+library(cellpypes)
+```
+
+```{r}
+#| include: false
+
+filtered.seuratObj <- readRDS("data/intermediate_data/05_integrate.filtered.seuratObj.rds")
+```
+
+# Find marker genes
+
+## Find markers for every cluster compared to all remaining cells, and report only the positive ones
+
+This type of analysis is typically for evaluating a single sample group/condition. With the `FindAllMarkers` function we are comparing each cluster against all other clusters to identify potential marker genes. The cells in each cluster are treated as replicates, and essentially a differential expression analysis is performed with some statistical test. By default, the test is Wilcoxon Rank Sum test.
+
+Seurat provides a convenient command for this purpose, `FindAllMarkers`.
+
+The `FindAllMarkers` function has three arguments to determine if a gene is a marker gene.
+
+`logfc.threshold` Limit testing to genes that show, on average, at least an X-fold difference (log-scale) between the two groups of cells. The default is 0.25. Increasing logfc.threshold speeds up the function but can miss weaker signals.
+
+`min.pct` Only test genes that are detected in a minimum fraction of min.pct cells in either of the two populations. It is meant to speed up the function by not testing infrequently expressed genes. The default is 0.1.
+
+`only.pos` Only return positive markers (FALSE by default)
+
+We can combine these arguments. We can change the arguments depending on how stringent we want to be. Here we will use the default settings.
+
+We look at the marker genes in the clusters in sample "activated".
+
+```{r}
+activated.markers <- FindAllMarkers(subset(integrate.filtered.seuratObj, subset = Sample_Name == "activated"), 
+                                    assay = "RNA",
+                                    only.pos = TRUE, 
+                                    min.pct = 0.25, 
+                                    logfc.threshold = 0.25)
+```
+
+Let's look at the top 2 significant marker genes in each cluster.
+
+```{r}
+activated.markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 2, order_by = avg_log2FC)
+```
+
+We get a table with the information on marker genes.
+
+`p_val` p-value before multiple testing.
+`avg_log2FC` log2 fold change on the average of gene expression between one cluster and the rest of cluster combined.
+`pct.1` Percentage of cells express the gene in one group. Here is one cluster.
+`pct.2` Percentage of cells express the gene in another group. Here is the rest of cluster combined.
+`p_val_adj` p-value with multiple testing correction.
+
+## Find conserved markers in all conditions
+
+We have two samples, naïve and activated. We can find conserved markers between the conditions with the function, `FindConservedMarkers`.
+
+This function internally separates out cells by sample group/condition, then performs differential gene expression testing for a single specified cluster against all other clusters (or a second cluster, if specified).
+
+Gene-level p-values are computed for each condition and then combined across groups using meta-analysis methods from the MetaDE R package.
+
+Many of the arguments in `FindConservedMarkers` are shared with `FindAllMarkers`. Here, we list some additional arguments when using `FindConservedMarkers`:
+
+`ident.1` This function only evaluates one cluster at a time; here, you would specify the cluster of interest.
+`grouping.var` The variable (column header) in your metadata specifies the separation of cells into groups.
+
+```{r}
+fcm <- FindConservedMarkers(integrate.filtered.seuratObj,
+                     assay = "RNA",
+                     ident.1 = "2",
+                     grouping.var = "Sample_Name",
+                     only.pos = TRUE,
+                     min.diff.pct = 0.25,
+                     min.pct = 0.25,
+                     logfc.threshold = 0.25)
+
+head(fcm)
+```
+
+We also get a table with information on marker genes. The statistics are computed for each group (naïve vs. activated), and the last two columns are the combined p-value across the two groups.
+
+`condition_p_val` p-value before multiple testing.
+`condition_avg_log2FC` log2 fold change on the average of gene expression between one cluster and the rest of the clusters combined.
+`condition_pct.1` Percentage of cells expressing the gene in one group.
+`condition_pct.2` Percentage of cells expressing the gene in another group.
+`condition_p_val_adj` p-value with multiple testing correction.
+
+::: callout-note
+The more significant the difference between `pct.1` and `pct.2`, the higher our confidence for the marker gene. If `pct.1` is 0.9 and `pct.2` is 0.8, it is not as interesting as if `pct.2` is 0.1.
+
+We expect marker genes to express in a group of cells. If `pct.1` is low, such as 0.3, it is not as interesting as if it is 0.9.
+:::
+
+We can visualize the marker gene expression by `FeaturePlot` and `VlnPlot`.
+
+```{r}
+FeaturePlot(object = integrate.filtered.seuratObj, 
+            features = c("GNLY", "GZMA"),
+            order = TRUE,
+            min.cutoff = 'q10', 
+            label = TRUE,
+            repel = TRUE)
+```
+
+```{r}
+VlnPlot(object = integrate.filtered.seuratObj, 
+        features = c("GNLY", "GZMA"))
+```
+
+## Find markers between two clusters
+
+We can use the `FindMarkers` to determine the differentially expressed genes between two clusters.
+
+```{r}
+example_findmarkers <- FindMarkers(integrate.filtered.seuratObj,
+                          assay = "RNA",
+                          ident.1 = 1,
+                          ident.2 = 2) %>% 
+  rownames_to_column("gene")
+```
+
+# Automatic annotation
+
+So far, we already look at the marker genes based on previous knowledge (last chapter) and between clusters. The manual annotation usually takes time, and we might need to go back and forth several times to annotate the clusters. Another way to annotate the clusters is through the automatic annotation.
+
+## Using custom reference - Seurat
+
+We look at the publicly available dataset with annotation and build a reference set based on its information. Then we can "transfer" the annotation from the reference to the query. Seurat provides the interface to connect with Azimuth.
+
+::: callout-note
+Because the annotation information is based on the reference set, the reference must have similarities with the query. For example, they are from the same tissue, same organism, similar experimental procedure, etc.
+:::
+
+```{r}
+integrate.filtered.seuratObj <- Azimuth::RunAzimuth(integrate.filtered.seuratObj, reference = "pbmcref")
+```
+
+We can look at the prediction on UMAP.
+
+```{r}
+p1 <- DimPlot(integrate.filtered.seuratObj, reduction = "umap", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3 ,repel = TRUE) + NoLegend()
+
+p2 <- DimPlot(integrate.filtered.seuratObj, reduction = "umap", group.by = "integrated_snn_res.0.2", label = TRUE, label.size = 3 ,repel = TRUE) + NoLegend()
+
+p1|p2
+```
+
+## Using existing references - SingleR
+
+The `celldex` contains several curated reference datasets, mostly assembled from bulk RNA-seq or microarray data of sorted cell types. These references are for most applications provided they contain the expected cell types in the test population. Here, we will use a reference constructed from Blueprint and ENCODE data (Martens and Stunnenberg 2013; The ENCODE Project Consortium 2012).
+
+```{r}
+# switch the assay to "RNA"
+DefaultAssay(integrate.filtered.seuratObj) <- "RNA"
+
+# get reference
+# ref_encode <- BlueprintEncodeData()
+ref_encode <- readRDS("data/blueprint_encode_ref.rds")
+
+# perform annotation
+annot_encode <- SingleR(test = as.SingleCellExperiment(integrate.filtered.seuratObj), ref = ref_encode, labels = ref_encode$label.main)
+
+# get labels into Seurat object
+integrate.filtered.seuratObj$annot_encode <- annot_encode$labels
+
+# Visualizae
+DimPlot(integrate.filtered.seuratObj, group.by = "annot_encode", label = T, reduction = "umap")
+```
+
+We can compare the manual annotation with the automatic annotation side by side.
+
+```{r}
+# switch the default assay to "RNA"
+DefaultAssay(integrate.filtered.seuratObj) <- "RNA" 
+
+# visualize cellpype and prediction side by side
+p1 <-  pype_from_seurat(integrate.filtered.seuratObj, graph_name = "integrated_nn") %>% 
+  rule("B",           "MS4A1",   ">", 1)                    %>%
+  # plot_last()
+  rule("CD14+ Mono",  "CD14",    ">", .25)                    %>%
+  # plot_last()
+  rule("CD14+ Mono",  "LYZ",     ">", 1)                   %>%
+  # plot_last()
+  rule("FCGR3A+ Mono","MS4A7",   ">", 1)                    %>%
+  # plot_classes()
+  # plot_last()
+  rule("NK",          "GNLY",    ">", 2)                   %>%
+  # plot_last()
+  rule("DC",          "FCER1A",  ">", 1)                    %>%
+  # plot_last()
+  rule("T",           "CD3E",    ">", 2)                  %>% 
+  # plot_last()
+  rule("CD8+ T",      "CD8A",    ">", 6,  parent="T")      %>%
+  # plot_last()
+  rule("CD4+ T",      "CD4",     ">", .5, parent="T")      %>%
+  # plot_last()
+  rule("Naive CD4+",  "CCR7",    ">", 2, parent="CD4+ T") %>%
+  # plot_last()
+  rule("Memory CD4+",  "S100A4", ">", 1,  parent="CD4+ T") %>% 
+  # plot_last()
+  plot_classes()
+
+p2 <- DimPlot(integrate.filtered.seuratObj, reduction = "umap", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3 ,repel = TRUE) + NoLegend()
+
+p1|p2
+```

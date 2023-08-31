@@ -1,0 +1,174 @@
+---
+title: "05 Clustering"
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| include: false
+
+
+# library
+library(tidyverse)
+library(Seurat)
+library(data.table)
+library(celldex)
+library(SingleR)
+library(ExperimentHub)
+```
+
+```{r}
+#| include: false
+
+filtered.seuratObj <- readRDS("data/intermediate_data/04_integrate.filtered.seuratObj.rds")
+```
+
+# Clustering cells
+
+Now that we have our high quality cells integrated, we want to know the different cell types present within our population of cells.
+
+Seurat uses a graph-based clustering approach, which embeds cells in a graph structure, using a K-nearest neighbor (KNN) graph (by default), with edges drawn between cells with similar gene expression patterns. Then, it attempts to partition this graph into highly interconnected 'quasi-cliques' or 'communities'.
+
+We will use the `FindClusters` function to perform the graph-based clustering. The \`resolution\` is an important argument that sets the "granularity" of the downstream clustering and will need to be optimized for every individual experiment.
+
+::: callout-note
+Increased resolution values lead to a greater number of clusters, which is often required for larger datasets.
+:::
+
+The `FindClusters` function allows us to enter a series of resolutions and will calculate the "granularity" of the clustering. This is very helpful for testing which resolution works for moving forward without having to run the function for each resolution.
+
+```{r}
+# Determine the K-nearest neighbor graph
+integrate.filtered.seuratObj <- FindNeighbors(object = integrate.filtered.seuratObj, dims = 1:15)
+                                
+# Determine the clusters for various resolutions                                
+integrate.filtered.seuratObj <- FindClusters(object = integrate.filtered.seuratObj,
+                               resolution = c(0.2, 0.4, 0.6,  0.8, 1, 1.2, 1.4))
+```
+
+The `meta.data` has a separate column for each of the different resolution calculated. We can look at how many clusters in each resolution.
+
+```{r}
+integrate.filtered.seuratObj@meta.data %>% 
+  dplyr::select(contains("integrat")) %>% 
+  map_int(~ unique(.x) %>% length)
+```
+
+We start with the resolution of 0.6. We will assign the identity of the clusters using the `Idents` function.
+
+```{r}
+Idents(object = integrate.filtered.seuratObj) <- "integrated_snn_res.0.6"
+
+# UMAP visualization
+DimPlot(integrate.filtered.seuratObj,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 6)
+```
+
+::: callout-note
+## Exercise
+
+Change the resolution to other values. How do the clusters change?
+:::
+
+# Distribution of cells per cluster
+
+The number of clusters are sensitive to the resolution. We have PBMC samples. We expect each cluster contains cells from both samples.
+
+```{r}
+n_cells <- FetchData(integrate.filtered.seuratObj, 
+                     vars = c("ident", "Sample_Name")) %>%
+  dplyr::count(ident, Sample_Name) %>%
+  tidyr::spread(ident, n)
+
+n_cells
+```
+
+```{r}
+# UMAP of cells in each cluster by sample
+DimPlot(integrate.filtered.seuratObj, 
+        label = TRUE, 
+        split.by = "Sample_Name")  + NoLegend()
+```
+
+# Exploring known cell type markers
+
+We can explore some known cell type markers to get an idea about the identity of clusters.
+
+Cell Type Markers: CD14+ monocytes: CD14, LYZ Conventional dendritic cells: FCER1A, CST3 B cells: CD79A, MS4A1 T cells: CD3D CD4+ T cells: CD3D, IL7R, CCR7 CD8+ T cells: CD3D, CD8A NK cells: GNLY, NKG7 Megakaryocytes: PPBP Macrophages: MARCO, ITGAM, ADGRE1
+
+The `FeaturePlot` makes it easy to visualize a handful of genes using the gene IDs stored in the Seurat object. We can easily explore the expression of known gene markers on top of our UMAP visualizations. Let's go through and determine the identities of the clusters. To access the normalized expression levels of all genes, we can use the normalized count stored in the `RNA` assay slot.
+
+```{r}
+DefaultAssay(integrate.filtered.seuratObj) <- "RNA"
+```
+
+We can look at the expression of marker genes to get an idea which cluster might be which cell type. If these markers for a cell type but only one is expressed, we cannot assign the cell type to that cluster.
+
+CD14+ monocytes: CD14, LYZ
+
+```{r}
+FeaturePlot(integrate.filtered.seuratObj, 
+            reduction = "umap", 
+            features = c("CD14", "LYZ"), 
+            order = TRUE,
+            min.cutoff = 'q10', 
+            label = TRUE)
+```
+
+B cells: CD79A, MS4A1
+
+```{r}
+FeaturePlot(integrate.filtered.seuratObj, 
+            reduction = "umap", 
+            features = c("CD79A", "MS4A1"), 
+            order = TRUE,
+            min.cutoff = 'q10', 
+            label = TRUE)
+```
+
+NK cells: GNLY, NKG7
+
+```{r}
+FeaturePlot(integrate.filtered.seuratObj, 
+            reduction = "umap", 
+            features = c("GNLY", "NKG7"), 
+            order = TRUE,
+            min.cutoff = 'q10', 
+            label = TRUE)
+```
+
+T cells: CD3D
+
+```{r}
+FeaturePlot(integrate.filtered.seuratObj, 
+            reduction = "umap", 
+            features = c("CD3D"), 
+            order = TRUE,
+            min.cutoff = 'q10', 
+            label = TRUE)
+```
+
+CD4+ T cells: CD3D, IL7R, CCR7
+
+```{r}
+FeaturePlot(integrate.filtered.seuratObj, 
+            reduction = "umap", 
+            features = c("CD3D", "IL7R", "CCR7"), 
+            order = TRUE,
+            min.cutoff = 'q10', 
+            label = TRUE)
+```
+
+CD8+ T cells: CD3D, CD8A
+
+```{r}
+FeaturePlot(integrate.filtered.seuratObj, 
+            reduction = "umap", 
+            features = c("CD3D", "CD8A"), 
+            order = TRUE,
+            min.cutoff = 'q10', 
+            label = TRUE)
+```

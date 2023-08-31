@@ -1,0 +1,34 @@
+---
+title: "About"
+---
+
+#Single Cell Boot Camp: Analysis of scRNA-seq with R
+Sep. 19th - 20th, 2023; 10am CET - ~2:30/3pm | Online
+
+#Description
+The Single Cell Boot Camp: Analysis of scRNA-seq with R is to provide an overview of the analysis of single-cell RNA-seq. It is designed for early-stage researchers who want to adopt single-cell analysis in their toolbox. The workshop consists of theory in presentation and application in hands-on practice.
+
+The workshop starts with a fast-paced training session on the common workflow of single-cell RNA-seq analysis, then continues with sessions on the common workflow of scRNA-seq using bioinformatics packages like Seurat.
+
+#Prerequisites
+Each participant should have:
+1. An introductory background in statistics, specifically in the below concepts:
+Median, log2 fold change, p-value, adjusted p-value, variance, PCA.
+2. Basic familiarity with R and tidyr package, specifically in the below functions:
+%>% (pipe), filter, mutate, pivot_longer, pivot_wider, map, pmap, select, left_join.
+
+For participants not familiar with R and tidyr package or need a refresher, it’s strongly recommended to go through the below resource (either one) before attending the workshop.
+
+If you would like to learn on your own with publicly available resources:
+Chapter 1 - 4 from MordernDive <https://moderndive.com/index.html>
+
+If you would like to participate in an instructor-led R course:
+R for Biologist from Edinburgh Genomics <https://genomics.ed.ac.uk/services/r-biologists-0#overlay-context=services/training> 
+Next occurrence: Sep 11th - 13th, 2023. For details, please contact Edinburgh Genomics.
+
+#Expected outcome
+By the end of the workshop, participants will be familiar with the following topics:
+- Common workflow of single cell analysis (pre-processing, quality control, filtering, normalization, Clustering, Cell type annotation)
+- Combining AbSeq and scRNA-seq for downstream analysis
+
+For further information, please contact: biox_support_emea@bd.com

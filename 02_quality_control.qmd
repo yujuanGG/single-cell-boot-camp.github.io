@@ -1,0 +1,277 @@
+---
+title: "02 Quality Control"
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| include: false
+
+# library
+library(tidyverse)
+library(Seurat)
+library(data.table)
+library(celldex)
+library(SingleR)
+library(ExperimentHub)
+```
+
+```{r}
+#| include: false
+
+seuratObj <- readRDS("data/intermediate_data/01_seuratObj.rds")
+```
+
+# Metrics for quality control
+
+When creating a Seurat object, Seurat automatically creates some metadata for each cell. This information is stored in the \`meta.data\` slot.
+
+```{r}
+seuratObj@meta.data %>% head()
+```
+
+`orig.ident` Sample identity or sample name. By default, it is "SeuratProject". `nCount_RNA` UMI counts per cell. `nFeature_RNA` Gene counts per cell. `Sample_Tag` a cell is from which sample tag. `Sample_Name` a cell is from which sample.
+
+::: callout-important
+## Question
+
+What is the purpose of quality control?
+:::
+
+::: {.callout-tip callapse="T"}
+## Answer
+
+Quality control is to filter out cells that are of low quality, e.g. dead cells.
+:::
+
+::: callout-important
+## Question
+
+How to perform quality control on scRNA-seq?
+:::
+
+::: {.callout-note collapse="T"}
+## Answer
+
+The quality control of whole transcriptome analysis (WTA) relies on three **quality metrics**: `nCount_RNA`, `nFeature_RNA`, and mitochondrial percentage (percentage of UMIs to mitochondrial genes in a cell).
+
+Low quality cells have the below characteristics:
+
+1.  small number of UMIs (`nCount_RNA` is low)
+2.  small number of genes (`nFeature_RNA` is low)
+3.  high mitochondrial percentage (mitochondrial percentage is high)
+
+In practice, we look at the distribution of quality metrics in cell population and set appropriate cutoff to filter out low quality cells.
+:::
+
+::: callout-tip
+The targeted assay contains genes of interest. Mitochondrial genes are usually not included in the gene panel of targeted assay.
+
+Therefore, the quality control of targeted assays relies on two metrics: `nCount_RNA` and `nFeature_RNA`.
+:::
+
+# Calculate mitochondrial percentage per cell
+
+Seurat has a convenient function, `PercentageFeatureSet`, to calculate the percentage of UMIs to mitochondrial genes in a cell.
+
+```{r}
+seuratObj[["percent.mt"]] <- PercentageFeatureSet(seuratObj, pattern = "^MT.")
+```
+
+::: callout-tip
+The mitochondrial genes typically include MT in their gene symbol. However, the pattern could be different:
+
+MT. or MT- or mt-. You might need to adjust the pattern to calculate the percentage correctly.
+:::
+
+The `PercentageFeatureSet` takes in a `pattern` argument and searches through all bioproduct names in the dataset for that pattern. Since we are looking for mitochondrial genes, we are searching for any gene names that begin with the pattern "\^MT.". For each cell, the function takes the sum of counts across all genes belonging to "\^MT.", and then divides it by the total counts for all genes. The result is stored in the `meta.data` column of `percent.mt`.
+
+```{r}
+#| echo: false
+seuratObj@meta.data %>% head
+```
+
+# Assessing the quality metrics
+
+We will assess the below metrics and decide on which cells are of low quality and should be removed from the analysis: `nCount_RNA`, `nFeature_RNA`, `percent.mt`.
+
+## `nCount_RNA` UMI counts per cell
+
+We look at `nCount_RNA` for the total number of UMI counts per cell. Generally, we expect a valid cell with at least 500 UMI counts.
+
+```{r}
+seuratObj@meta.data %>% 
+  ggplot(aes(color=Sample_Name, x=nCount_RNA, fill= Sample_Name)) + 
+  geom_density(alpha = 0.2) + 
+  scale_x_log10() + 
+  theme_classic() +
+  ylab("Cell density") +
+  geom_vline(xintercept = 500) +
+  ggtitle("nCount_RNA")
+```
+
+## `nFeature_RNA` Gene counts per cell
+
+We look at `nFeature_RNA` for gene counts per cell. Generally, we expect a valid cell with at least 300 genes.
+
+```{r}
+seuratObj@meta.data %>% 
+  ggplot(aes(color=Sample_Name, x=nFeature_RNA, fill= Sample_Name)) + 
+  geom_density(alpha = 0.2) + 
+  scale_x_log10() + 
+  theme_classic() +
+  ylab("Cell density") +
+  geom_vline(xintercept = 300) +
+  ggtitle("nFeature_RNA")
+```
+
+## `percent.mt` Mitochondrial percentage per cell
+
+We look at `percent.mt` for mitochondrial percentage per cell. The majority of cells have mitochondrial percentage below 25%.
+
+```{r}
+seuratObj@meta.data %>% 
+  ggplot(aes(color=Sample_Name, x=percent.mt, fill=Sample_Name)) + 
+  geom_density(alpha = 0.2) + 
+  theme_classic() +
+  geom_vline(xintercept = 25) +
+  ggtitle("percent.mt")
+```
+
+## Combine metrics to come up filtering threthold
+
+We can combine the metrics to decide the filtering threshold.
+
+```{r}
+seuratObj@meta.data %>% 
+  ggplot(aes(x=nCount_RNA, y=nFeature_RNA, color=percent.mt)) + 
+  geom_point() + 
+  scale_colour_gradient(low = "gray90", high = "black") +
+  stat_smooth(method=lm) +
+  scale_x_log10() + 
+  scale_y_log10() + 
+  theme_classic() +
+  geom_vline(xintercept = 500, colour = "red") +
+  geom_hline(yintercept = 300, colour = "red") +
+  facet_wrap(~Sample_Name) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+The data is fitted with a regression line. We expect when UMI counts increase, gene counts also increase.
+
+Upper right quadrant: Cells with high number of genes and UMI counts. We generally consider these cells to be good-quality cells.
+
+Bottom right quadrant: Cells with low number of genes and UMI counts. We generally consider these cells are low-quality cells.
+
+Darker cells: Cells with high mitochondrial percentage. Many of these cells have low gene counts. This could indicate damaged/dying cells whose cytoplasmic mRNA has leaked out through a broken membrane; therefore, only mRNA located in the mitochondria is still conserved.
+
+# Filter
+
+## Filter on cells
+
+Based on the quality metrics, we use the following thresholds to filter out low quality cells:
+
+`nCount_RNA` \> 500 `nFeature_RNA` \> 300 `nFeature_RNA` \< 5000 `percent.mt` \< 25%
+
+```{r}
+filtered.seuratObj <- subset(x = seuratObj, 
+                             subset = (nCount_RNA >= 500) & 
+                               (nFeature_RNA >= 300) &
+                               (nFeature_RNA <= 5000) &
+                               (percent.mt < 25))
+```
+
+## Filter on genes
+
+Some of the genes have zero counts or are only expressed in a handful of cells. These genes don't bring much information, and they reduce the average expression of a cell.
+
+We keep only genes that are expressed in **five or more cells**. `GetAssayData` is a convenient command to get information from the Seurat object. We use `GetAssayData` to extract the UMI counts.
+
+```{r}
+# Extract counts
+counts <- GetAssayData(object = filtered.seuratObj, slot = "counts")
+
+# Output a logical matrix specifying for each gene whether or not there are more than zero counts per cell
+nonzero <- counts > 0
+
+# Sum all TRUE values and return TRUE if equal or more than 5 TRUE values per gene
+keep_genes <- Matrix::rowSums(nonzero) >= 5
+
+# Only keep those genes
+filtered_counts <- counts[keep_genes, ]
+
+# Create Seurat object
+filtered.seuratObj <- CreateSeuratObject(filtered_counts, meta.data = filtered.seuratObj@meta.data)
+```
+
+::: callout-tip
+The targeted assay contains genes of interest, and these genes typically express in the profiling cells. Therefore, "Filter on genes" is usually not performed on targeted assays.
+:::
+
+# Re-assess metrics
+
+After filtering, we look back to the metrics to ensure the filtered data matches expectations and is suitable for downstream analysis. We plot all QC metrics using the filtered data.
+
+```{r}
+filtered.seuratObj@meta.data %>% 
+  ggplot(aes(color=Sample_Name, x=nCount_RNA, fill= Sample_Name)) + 
+  geom_density(alpha = 0.2) + 
+  scale_x_log10() + 
+  theme_classic() +
+  ylab("Cell density") +
+  geom_vline(xintercept = 500) +
+  ggtitle("nCount_RNA")
+```
+
+```{r}
+filtered.seuratObj@meta.data %>% 
+  ggplot(aes(color=Sample_Name, x=nFeature_RNA, fill= Sample_Name)) + 
+  geom_density(alpha = 0.2) + 
+  scale_x_log10() + 
+  theme_classic() +
+  ylab("Cell density") +
+  geom_vline(xintercept = 300) +
+  ggtitle("nFeature_RNA")
+```
+
+```{r}
+filtered.seuratObj@meta.data %>% 
+  ggplot(aes(color=Sample_Name, x=percent.mt, fill=Sample_Name)) + 
+  geom_density(alpha = 0.2) + 
+  theme_classic() +
+  geom_vline(xintercept = 25) +
+  ggtitle("percent.mt")
+```
+
+```{r}
+filtered.seuratObj@meta.data %>% 
+  ggplot(aes(x=nCount_RNA, y=nFeature_RNA, color=percent.mt)) + 
+  geom_point() + 
+  scale_colour_gradient(low = "gray90", high = "black") +
+  stat_smooth(method=lm) +
+  scale_x_log10() + 
+  scale_y_log10() + 
+  theme_classic() +
+  geom_vline(xintercept = 500, color = "red") +
+  geom_hline(yintercept = 300, color = "red") +
+  facet_wrap(~Sample_Name)
+```
+
+Cells that are considered low quality in the bottom right quadrant are removed. We can also compare the cell number before and after filtering. More than 90% of cells are kept.
+
+Before filtering:
+
+```{r}
+seuratObj@meta.data %>% 
+  group_by(Sample_Name) %>% 
+  dplyr::summarise(cell_number = length(Sample_Name))
+```
+
+After filtering:
+
+```{r}
+filtered.seuratObj@meta.data %>% 
+  group_by(Sample_Name) %>% 
+  dplyr::summarise(cell_number = length(Sample_Name))
+```

@@ -1,0 +1,191 @@
+---
+title: "09 Combining scRNAseq and AbSeq"
+---
+
+```{r}
+#| include: false
+
+# library
+library(tidyverse)
+library(Seurat)
+library(data.table)
+library(celldex)
+library(SingleR)
+library(ExperimentHub)
+```
+
+```{r}
+#| include: false
+
+filtered.seuratObj <- readRDS("")
+```
+
+Sometimes, the experiment has RNA profiling and protein profiling (AbSeq) in single cell resolution.
+
+Each measurement is one modality. When the experiment has two or more modalities, we call it "multimodal analysis".
+
+Seurat package also provides the framework to analyze multimodal data.
+
+For multimodal data with RNA and protein profiling from several subjects, samples from each modality are first integrated/merge together.
+
+Then, we use the weighted nearest neighbors (WNN) approach, which enables simultaneous clustering of cells based on weighted combination of both modalities to combine the data.
+
+# Processing AbSeq 
+
+In previous chapters, we filter out unwanted cells based on number of genes and mitochondrial percentage per cell. The rna Seurat object contains a subset of cells from the original cell pool.
+
+Next, we filter the AbSeq data so that it contains the same group of cells as in RNA Seurat object.
+
+```{r}
+# get cells from rna seurat object
+cell_index <- colnames(integrate.filtered.seuratObj)
+
+# filter abseq data based on cell id from rna seurat object
+ab <- ab %>% 
+  tibble::rownames_to_column('protein') %>% 
+  dplyr::select(protein, cell_index) %>% 
+  column_to_rownames("protein")
+```
+
+In previous chapters, we performed integration on the RNA level of naive and activated PBMC samples. We perform integration of samples for AbSeq as well. The AbSeq from each sample will be first integrated, and then combined with the RNA level.
+
+We start by creating a new Seurat object to work on AbSeq.
+
+```{r}
+# create a new assay to store ADT information
+ab_assay <- CreateAssayObject(counts = ab)
+
+# add this assay to the previously created Seurat object
+integrate.filtered.seuratObj[["AB"]] <- ab_assay
+
+# Validate that the object now contains multiple assays
+integrate.filtered.seuratObj
+```
+
+Next, we split the Seurat object by sample to normalize them separately.
+
+The recommended normalization method for AbSeq is CLR, Centered Log Ratio. Due to the unspecific binding background signal of antibody, log-normalization doesn't work well in AbSeq data.
+
+There are 20 AbSeq in the experiment. We are going to use all of them as variable features.
+
+```{r}
+DefaultAssay(integrate.filtered.seuratObj) <- 'AB'
+
+# we set a dimensional reduction name to avoid overwriting
+VariableFeatures(integrate.filtered.seuratObj) <- rownames(integrate.filtered.seuratObj[["AB"]])
+
+integrate.filtered.seuratObj <- NormalizeData(integrate.filtered.seuratObj, normalization.method = 'CLR', margin = 2) %>% 
+  ScaleData() %>% RunPCA(reduction.name = 'apca')
+```
+
+# Weighted nearest neighbour (WNN)
+
+The weighted nearest neighbour (WNN) is a statistical framework implemented in Seurat for the multimodal analysis.
+
+WNN requires pre-processing and dimentionality reduction on both assays independently.
+
+```{r}
+integrate.filtered.seuratObj <- FindMultiModalNeighbors(
+  integrate.filtered.seuratObj, reduction.list = list("pca", "apca"), 
+  dims.list = list(1:15, 1:18), modality.weight.name = "RNA.weight"
+)
+```
+
+`reduction.list` Dimentionality reduction to use from each element
+`dims.list` Number of PCs to include from each element
+`modality.weight.name` Give a name to the weight of each element
+
+Now, we run UMP using the calculated WNN.
+
+For each cell, we calculate its closest neighbors in the dataset based on a weighted combination of RNA and protein similarities. 
+We specify the dimensionality of each modality (similar to specifying the number of PCs to include in scRNA-seq clustering). We use the same number of PCs as we did in previous steps.
+
+```{r}
+# run UMAP
+integrate.filtered.seuratObj <- RunUMAP(integrate.filtered.seuratObj, 
+                                        nn.name = "weighted.nn", 
+                                        reduction.name = "wnn.umap", 
+                                        reduction.key = "wnnUMAP_")
+
+# find clusters
+integrate.filtered.seuratObj <- FindClusters(integrate.filtered.seuratObj, 
+                                             graph.name = "wsnn", 
+                                             resolution = 0.4, 
+                                             verbose = FALSE)
+```
+
+Finally, we can look at the results in UMAP.
+
+```{r}
+# visualize the result in UMAP
+p1 <- DimPlot(integrate.filtered.seuratObj, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5, group.by = "predicted.celltype.l1")
+
+p2 <- DimPlot(integrate.filtered.seuratObj, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5)
+
+p1|p2
+```
+
+Let's compare the UMAPs from RNA only and from WNN. The T cells cluster better in WNN UMAP. Usually, AbSeq brings better resolution (people hand pick the cell type maker proteins).
+
+```{r}
+# compare the UMAPs based on RNA and on WNN
+p1 <- DimPlot(integrate.filtered.seuratObj, reduction = 'umap', group.by = 'predicted.celltype.l1', label = TRUE, repel = TRUE, label.size = 2.5) + NoLegend() + ggtitle("RNA")
+
+p2 <- DimPlot(integrate.filtered.seuratObj, reduction = 'wnn.umap', group.by = 'predicted.celltype.l1', label = TRUE, repel = TRUE, label.size = 2.5) + NoLegend() + ggtitle("WNN")
+
+p1|p2
+```
+
+# AbSeq visualization
+
+We have several assays stored in the Seurat object. We can easily switch among them and work on different assays.
+
+
+
+::: callout-note
+It is important to know which assay you are working on. We might get unexpected results if we work on AbSeq but actually the default assay is RNA.
+:::
+
+```{r}
+# List the current default assay
+DefaultAssay(integrate.filtered.seuratObj)
+```
+
+::: callout-important
+## Question
+
+How to switch the default assay?
+:::
+
+::: {.callout-tip collapse="T"}
+## Answer
+
+```{r}
+DefaultAssay(integrate.filtered.seuratObj) <- "RNA"
+```
+:::
+
+Let's look at the protein and gene expression side by side. By setting the default assay, we can visualize one or the other.
+
+CD19 is a B cell marker. We can plot the UMAP with annotation side by side with the CD19 AbSeq.
+
+```{r}
+# switch default assay to AbSeq to plot protein expression
+DefaultAssay(integrate.filtered.seuratObj) <- "AB"
+p1 <- FeaturePlot(integrate.filtered.seuratObj, "CD19.CD19.AHS0030.pAbO", cols = c("lightgrey", "darkgreen"), reduction = 'wnn.umap')
+
+# switch default to RNA to plot gene expression
+DefaultAssay(integrate.filtered.seuratObj) <- "RNA"
+p2 <- FeaturePlot(integrate.filtered.seuratObj, "CD19", reduction = 'wnn.umap')
+
+# place plots side-by-side
+p1 | p2
+```
+
+```{r}
+p1 <- FeaturePlot(integrate.filtered.seuratObj, "CD45RA.PTPRC.AHS0009.pAbO", cols = c("lightgrey", "darkgreen"), reduction = 'wnn.umap')
+
+p2 <- FeaturePlot(integrate.filtered.seuratObj, "CD45.PTPRC.AHS0040.pAbO", cols = c("lightgrey", "darkgreen"), reduction = 'wnn.umap')
+
+p1|p2
+```
